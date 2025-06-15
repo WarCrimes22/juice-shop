@@ -1,0 +1,75 @@
+name: DevSecOps CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  devsecops:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # SCA - npm audit
+      - name: Run SCA (npm audit)
+        run: npm audit --audit-level=high
+
+      # SAST - Semgrep
+      - name: Run Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "p/default"
+
+      # Secrets Scan - GitLeaks
+      - name: Scan for secrets with GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: ""
+          args: "--verbose"
+
+      # Build Docker image
+      - name: Build Docker image
+        run: docker build -t juice-shop:latest .
+
+      # Trivy scan of Docker image
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: juice-shop:latest
+          severity: HIGH,CRITICAL
+          format: table
+
+      # DAST scan using OWASP ZAP
+      - name: Run OWASP ZAP DAST scan
+        run: |
+          docker run -d -p 3000:3000 --name juice-shop juice-shop:latest
+          sleep 20
+          docker run --rm --network container:juice-shop owasp/zap2docker-stable zap-baseline.py \
+            -t http://localhost:3000 \
+            -r zap-report.html || true
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v3
+        with:
+          name: zap-report
+          path: zap-report.html
+
+      # Docker login and push to Docker Hub
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Tag and push image
+        run: |
+          docker tag juice-shop:latest ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
