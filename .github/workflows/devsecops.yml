@@ -8,10 +8,6 @@ on:
 jobs:
   devsecops:
     runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:dind
-        privileged: true
 
     steps:
       - name: Checkout repository
@@ -23,7 +19,7 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       # SCA - npm audit
       - name: Run SCA (npm audit)
@@ -58,12 +54,11 @@ jobs:
       - name: Run OWASP ZAP DAST scan
         run: |
           docker run -d -p 3000:3000 --name juice-shop juice-shop:latest
-          sleep 15
-          docker run --network="host" owasp/zap2docker-stable zap-baseline.py \
+          sleep 20
+          docker run --rm --network container:juice-shop owasp/zap2docker-stable zap-baseline.py \
             -t http://localhost:3000 \
             -r zap-report.html || true
 
-      # Upload OWASP ZAP report
       - name: Upload ZAP report
         uses: actions/upload-artifact@v3
         with:
