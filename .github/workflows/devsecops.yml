@@ -1,4 +1,4 @@
-name: DevSecOps CI/CD
+name: DevSecOps Pipeline
 
 on:
   push:
@@ -6,81 +6,105 @@ on:
   pull_request:
 
 jobs:
-  devsecops:
+  build:
+    name: Build Docker Image
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-
-      # Instalacja zależności i narzędzi
-      - name: Install dependencies and tools
-        run: |
-          npm install
-          npm install -g nyc
-          npm install -g cypress
-          npm install -g mocha ts-node source-map-support
-
-      # SCA - npm audit
-      - name: Run SCA (npm audit)
-        run: npm audit --audit-level=high
-
-      # SAST - Semgrep
-      - name: Run Semgrep SAST
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: "p/default"
-
-      # Secrets Scan - GitLeaks
-      - name: Scan for secrets with GitLeaks
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          config-path: ""
-          args: "--verbose"
-
-      # Build Docker image
       - name: Build Docker image
         run: docker build -t juice-shop:latest .
 
-      # Trivy scan of Docker image
-      - name: Run Trivy scan
-        uses: aquasecurity/trivy-action@master
+  sca:
+    name: SCA - Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Run npm audit
+        run: |
+          npm audit --audit-level=high || true
+
+  sast:
+    name: SAST - Static Code Analysis (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
         with:
-          image-ref: juice-shop:latest
-          severity: HIGH,CRITICAL
-          format: table
+          config: p/default
 
-      # Tymczasowe uruchomienie aplikacji do DAST
-      - name: Start Juice Shop in Docker
+  secrets:
+    name: Secrets Scan - GitLeaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Start Juice Shop container
         run: |
-          docker run -d -p 3000:3000 --name juice-shop juice-shop:latest
-          sleep 15
+          docker run -d -p 3000:3000 --name juice-shop bkimminich/juice-shop
+          sleep 20
 
-      # DAST - OWASP ZAP scan
-      - name: Run OWASP ZAP DAST scan
+      - name: Run OWASP ZAP baseline scan
         run: |
-          docker run --network="host" owasp/zap2docker-stable zap-baseline.py \
-            -t http://localhost:3000 \
-            -r zap-report.html || true
+          docker run --network host owasp/zap2docker-stable zap-baseline.py \
+            -t http://localhost:3000 -g gen.conf -r zap-report.html
 
-      # Upload ZAP report
       - name: Upload ZAP report
         uses: actions/upload-artifact@v3
         with:
           name: zap-report
           path: zap-report.html
 
-      # Login to Docker Hub
-      - name: Login to DockerHub
+  trivy:
+    name: Container Scan - Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv trivy /usr/local/bin/
+
+      - name: Build Docker image
+        run: docker build -t juice-shop:latest .
+
+      - name: Scan Docker image
+        run: trivy image --severity HIGH,CRITICAL juice-shop:latest
+
+  push:
+    name: Push Docker Image to Docker Hub
+    runs-on: ubuntu-latest
+    needs: [build, trivy]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      # Push Docker image to Docker Hub
-      - name: Tag and Push Docker image
+      - name: Build image
+        run: docker build -t juice-shop:latest .
+
+      - name: Tag and Push image
         run: |
           docker tag juice-shop:latest ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
           docker push ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
