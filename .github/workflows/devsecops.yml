@@ -18,8 +18,13 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install dependencies
-        run: npm ci
+      # Instalacja zależności i narzędzi
+      - name: Install dependencies and tools
+        run: |
+          npm install
+          npm install -g nyc
+          npm install -g cypress
+          npm install -g mocha ts-node source-map-support
 
       # SCA - npm audit
       - name: Run SCA (npm audit)
@@ -50,26 +55,32 @@ jobs:
           severity: HIGH,CRITICAL
           format: table
 
-      # DAST scan using OWASP ZAP
-      - name: Run OWASP ZAP DAST scan
+      # Tymczasowe uruchomienie aplikacji do DAST
+      - name: Start Juice Shop in Docker
         run: |
           docker run -d -p 3000:3000 --name juice-shop juice-shop:latest
-          sleep 20
-          docker run --rm --network container:juice-shop owasp/zap2docker-stable zap-baseline.py \
+          sleep 15
+
+      # DAST - OWASP ZAP scan
+      - name: Run OWASP ZAP DAST scan
+        run: |
+          docker run --network="host" owasp/zap2docker-stable zap-baseline.py \
             -t http://localhost:3000 \
             -r zap-report.html || true
 
+      # Upload ZAP report
       - name: Upload ZAP report
         uses: actions/upload-artifact@v3
         with:
           name: zap-report
           path: zap-report.html
 
-      # Docker login and push to Docker Hub
+      # Login to Docker Hub
       - name: Login to DockerHub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      - name: Tag and push image
+      # Push Docker image to Docker Hub
+      - name: Tag and Push Docker image
         run: |
           docker tag juice-shop:latest ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
           docker push ${{ secrets.DOCKER_USERNAME }}/juice-shop:latest
